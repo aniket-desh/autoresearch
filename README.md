@@ -1,4 +1,4 @@
-# autoresearch
+## aniket's autoresearch
 
 generic runpod bootstrap for mech-interp / ai research projects. one
 curl-pipe-bash from a fresh pod (root ssh, blank /workspace volume) to
