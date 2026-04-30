@@ -70,20 +70,36 @@ curl -fsSL https://raw.githubusercontent.com/aniket-desh/autoresearch/main/setup
     bash
 ```
 
-## what the cloned repo should provide
+## what's in the repo
 
-`setup.sh` assumes your project repo follows two conventions:
+```
+setup.sh                          one-shot bootstrap (entry point)
+scripts/runpod_setup.sh           generic project setup (uv + .env template)
+scripts/runpod_activate.sh        generic activate (loads .env, prints status)
+```
+
+## bundled helpers (auto-installed into the cloned project)
+
+`setup.sh` looks for these two scripts inside the cloned project repo:
 
 - `scripts/runpod_setup.sh` — installs uv, runs `uv sync` against your
-  `pyproject.toml`, creates a `.env` template with your project's api
-  keys (anthropic, hf, wandb, etc.). called as the non-root user in
-  step 5. if missing, the script skips this step and prints a note.
-- `scripts/runpod_activate.sh` — sources `.env`, verifies keys are set,
-  runs `nvidia-smi`. you source this manually inside tmux before
+  `pyproject.toml`, creates a `.env` template with the standard mech-interp
+  api keys (anthropic, hf, wandb, github), gitignores `.env`. called as
+  the non-root user in step 5.
+- `scripts/runpod_activate.sh` — sources `.env`, activates the uv venv,
+  puts the repo on `PYTHONPATH`, prints a one-line status (which keys
+  are set, gpu list). you source this manually inside tmux before
   launching claude code.
 
-if your project doesn't have these, either add them (5–20 lines each)
-or do the equivalent steps by hand after `setup.sh` completes.
+**if the project repo doesn't ship them, autoresearch curls its own
+versions from `scripts/runpod_*.sh` in this repo and drops them into
+`<project>/scripts/`** (only if missing — never overwrites a project's
+custom version). this means even a brand-new project with nothing but a
+`pyproject.toml` works out of the box.
+
+if your project has its own setup needs (extra apt packages, custom
+env vars, model prefetching), just add a `scripts/runpod_setup.sh` to
+your repo and `setup.sh` will use it instead of the autoresearch default.
 
 ## bugs this script handles
 

@@ -148,6 +148,10 @@ echo "  /workspace/.cache → $(ls -ld /workspace/.cache | awk '{print $1, $3}')
 
 echo
 echo "=== [4/6] clone + checkout ${BRANCH} as ${USER_NAME} ==="
+# autoresearch's bundled fallback helper scripts. used by step [5/6] if
+# the cloned project repo doesn't ship its own scripts/runpod_*.sh.
+AUTORESEARCH_RAW="https://raw.githubusercontent.com/aniket-desh/autoresearch/main/scripts"
+
 su - "${USER_NAME}" <<EOF
 set -euo pipefail
 cd "${WORKSPACE}"
@@ -158,6 +162,16 @@ cd "${REPO_DIR}"
 git fetch origin
 git checkout "${BRANCH}"
 git pull --ff-only origin "${BRANCH}" || true
+
+# fall back to autoresearch's bundled helpers if the project doesn't
+# ship its own. only install if missing — never overwrite.
+mkdir -p scripts
+for f in runpod_setup.sh runpod_activate.sh; do
+    if [ ! -f "scripts/\$f" ]; then
+        echo "  fetching autoresearch's \$f (project repo doesn't ship one)"
+        curl -fsSL "${AUTORESEARCH_RAW}/\$f" -o "scripts/\$f"
+    fi
+done
 chmod +x scripts/runpod_setup.sh scripts/runpod_activate.sh 2>/dev/null || true
 EOF
 
@@ -166,11 +180,7 @@ echo "=== [5/6] run scripts/runpod_setup.sh as ${USER_NAME} (uv sync + .env temp
 su - "${USER_NAME}" <<EOF
 set -euo pipefail
 cd "${REPO_DIR}"
-if [ -f scripts/runpod_setup.sh ]; then
-    bash scripts/runpod_setup.sh
-else
-    echo "  (no scripts/runpod_setup.sh in repo — skipping; you'll need to set up uv + .env manually)"
-fi
+bash scripts/runpod_setup.sh
 EOF
 
 echo
