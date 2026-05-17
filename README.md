@@ -46,6 +46,22 @@ curl -fsSL https://raw.githubusercontent.com/aniket-desh/autoresearch/main/setup
 then follow the printed step-by-step block (switch to user, fill in
 .env, open tmux, launch claude code).
 
+## after a pod stop/restart
+
+runpod wipes the container filesystem on stop/restart (so `/etc/passwd`
+loses the user you created, apt packages are gone, node + claude code
+are gone) but `/workspace` is persistent. on the first successful run,
+`setup.sh` stashes a re-bootstrap script at `/workspace/bootstrap.sh`
+with your `REPO`/`BRANCH`/`USER_NAME` already baked in. so when you ssh
+back into a restarted pod as root, you just run:
+
+```bash
+bash /workspace/bootstrap.sh
+```
+
+no need to re-type the curl pipe. the cloned repo on `/workspace`
+isn't re-cloned; only the container-side bits get reinstalled.
+
 ## configuration
 
 env vars (each takes effect when piped into bash as above):
