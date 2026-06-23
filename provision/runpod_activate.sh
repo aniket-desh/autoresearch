@@ -18,6 +18,22 @@ if [ -f .env ]; then
     set +a
 fi
 
+# --- billing safety -----------------------------------------------------------
+# CRITICAL: if ANTHROPIC_API_KEY is exported when you launch `claude`, Claude
+# Code bills your interactive turns at API pay-as-you-go rates EVEN IF you're
+# logged in on a subscription — the key takes precedence over the OAuth login.
+# We want the opposite: interactive turns on the $200 subscription, and the API
+# key reserved for headless autointerp / LLM-judge calls only.
+#
+# So: stash the key under a name Claude Code ignores, then alias `claude` to
+# launch with the key stripped from its environment. Hooks/scripts that DO want
+# the autointerp key read AUTOINTERP_ANTHROPIC_API_KEY and re-inject it.
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    export AUTOINTERP_ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}"
+fi
+# strip the key from interactive claude launches (subscription billing).
+alias claude='env -u ANTHROPIC_API_KEY claude'
+
 # uv writes the venv to .venv by default.
 if [ -f .venv/bin/activate ]; then
     # shellcheck disable=SC1091
@@ -49,7 +65,7 @@ export TERM="${TERM:-xterm-256color}"
 # one-line status print so the user knows the env is loaded + which keys
 # are set (without echoing the keys themselves).
 echo "(runpod) repo: $REPO_ROOT"
-[ -n "${ANTHROPIC_API_KEY:-}" ] && echo "  ANTHROPIC_API_KEY: set"   || echo "  ANTHROPIC_API_KEY: missing"
+[ -n "${ANTHROPIC_API_KEY:-}" ] && echo "  ANTHROPIC_API_KEY: set (autointerp/judge only — stripped from interactive claude)" || echo "  ANTHROPIC_API_KEY: missing"
 [ -n "${HF_TOKEN:-}" ]          && echo "  HF_TOKEN:          set"   || echo "  HF_TOKEN:          missing"
 [ -n "${GH_TOKEN:-}" ]          && echo "  GH_TOKEN:          set"   || echo "  GH_TOKEN:          missing"
 [ -n "${WANDB_API_KEY:-}" ]     && echo "  WANDB_API_KEY:     set"   || echo "  WANDB_API_KEY:     (optional)"

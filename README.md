@@ -1,145 +1,140 @@
-## aniket's autoresearch
+## agents
 
-generic runpod bootstrap for mech-interp / ai research projects. one
-curl-pipe-bash from a fresh pod (root ssh, blank /workspace volume) to
-"tmux + claude code running as a non-root user inside a uv venv".
+A two-part setup repo for running AI research on rented GPUs:
 
-## what it does
+1. **`provision/`** — one curl-pipe-bash that takes a fresh RunPod from absolute
+   zero (root ssh, blank `/workspace`) to "tmux + Claude Code running as a
+   non-root user inside a uv venv." (This was the whole `autoresearch` repo;
+   it's now one subsystem.)
+2. **`team/` + the Claude Code bundle** — a **team-of-agents-run-by-an-agent**
+   workflow: a `main` orchestrator you talk to, persistent named peers (Hilbert,
+   Gauss, Poincaré…) that each own one experiment idea, and per-peer **dynamic
+   workflows** that fan out ephemeral subagents with adversarial verification.
 
-`setup.sh` takes a fresh runpod from absolute zero to a fully working
-research environment in one invocation. specifically:
+See [`PLAN.md`](PLAN.md) for the full design rationale and the do's/don'ts.
 
-1. installs apt packages (git, tmux, vim, locales, fonts-noto-color-emoji)
-   so claude code's box-drawing chars and emoji render correctly
-2. generates the en_US.UTF-8 locale and persists it in root's + the
-   user's .bashrc / .profile (also exports for the running shell)
-3. installs node.js 22 from nodesource
-4. creates a non-root user (default `researcher`) with ssh keys mirrored
-   from root, so `ssh user@pod` works on the next session
-5. pre-creates `/workspace/.cache` and `/workspace/.cache/huggingface`
-   with chmod 777 so the per-user setup doesn't eacces on hf cache mkdirs
-6. clones your repo at the requested branch into
-   `/workspace/<user>/<repo>`
-7. runs your repo's `scripts/runpod_setup.sh` (uv sync + .env template)
-   if it exists; otherwise prints what's missing
-8. installs claude code globally for the user (npm prefix is set to
-   `~/.npm-global` BEFORE the install so it doesn't try `/usr/lib`)
-9. drops a sane `~/.tmux.conf` with `default-terminal=tmux-256color` +
-   truecolor passthrough, so claude code renders correctly inside tmux
-10. prints a clear step-by-step "what to do next" block at the end
+---
 
-idempotent. re-running on a half-set-up pod is safe; every step checks
-state before acting.
+## quickstart
 
-## usage
-
-ssh into a fresh runpod as root, then:
+ssh into a fresh RunPod as root:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/aniket-desh/autoresearch/main/setup.sh \
-  | REPO=https://github.com/<owner>/<repo>.git \
+curl -fsSL https://raw.githubusercontent.com/aniket-desh/agents/main/setup.sh \
+  | REPO=https://github.com/<owner>/<project>.git \
     BRANCH=<branch> \
     USER_NAME=<user> \
     bash
 ```
 
-then follow the printed step-by-step block (switch to user, fill in
-.env, open tmux, launch claude code).
+This provisions the pod **and** installs the agent-team layer. Then:
 
-## after a pod stop/restart
+```bash
+su - <user>
+claude                       # ONE-TIME /login on your subscription — do NOT paste an API key
+cd /workspace/<user>/<project>
+team                         # launch main + peers, auto-sized to the pod's GPUs
+```
 
-runpod wipes the container filesystem on stop/restart (so `/etc/passwd`
-loses the user you created, apt packages are gone, node + claude code
-are gone) but `/workspace` is persistent. on the first successful run,
-`setup.sh` stashes a re-bootstrap script at `/workspace/bootstrap.sh`
-with your `REPO`/`BRANCH`/`USER_NAME` already baked in. so when you ssh
-back into a restarted pod as root, you just run:
+Talk to the **main** session; it delegates one experiment idea to each peer.
+Watch the whole fleet with `claude agents`.
+
+---
+
+## billing model (important)
+
+You run interactive agents on your **Claude subscription**, and reserve the
+`ANTHROPIC_API_KEY` for **headless autointerp / LLM-judge calls only**.
+
+> If `ANTHROPIC_API_KEY` is exported when you launch `claude`, Claude Code bills
+> every interactive turn at API pay-as-you-go rates **even while you're logged
+> in on a subscription** — the key silently takes precedence. `provision/runpod_activate.sh`
+> fixes this: it stashes the key as `AUTOINTERP_ANTHROPIC_API_KEY` and aliases
+> `claude` to launch with the key stripped (`env -u ANTHROPIC_API_KEY claude`).
+> The judge hook re-injects the stashed key only for its own headless calls.
+
+---
+
+## repo structure
+
+```
+setup.sh                          one-shot pod bootstrap (entry point; installs both subsystems)
+PLAN.md                           full design + rationale
+
+provision/                        SUBSYSTEM 1 — the RunPod bootstrap
+  runpod_setup.sh                 uv sync + .env template
+  runpod_activate.sh              sources .env, activates venv, billing-safe claude alias
+
+team/                             SUBSYSTEM 2 — the agent-team layer
+  team.sh                         launcher: name-sample + GPU-partition + native --worktree/--tmux
+  msg.sh                          agent-to-agent messaging (tmux send-keys)
+  names.txt                       243 mathematician/physicist surnames (sampled w/o replacement)
+  install.sh                      installs the bundle below into CLAUDE_CONFIG_DIR + launchers on PATH
+  bundle/                         the Claude Code config that lands on the pod
+    agents/{main,peer}.md         orchestrator + worker roles
+    commands/{howto,peers}.md     custom slash commands (/howto cheat-sheet, /peers dashboard)
+    skills/thermonuclear-review/  deep adversarial review skill
+    hooks/                        guard / judge / postcompact / mailbox-drain / worktree-link
+    settings.json                 permissions.deny backstop + hook wiring
+```
+
+> The pod bundle lives under `team/bundle/` (not the repo's own `.claude/`) on
+> purpose — so working on *this* repo doesn't activate the pod hooks. `install.sh`
+> copies it into `CLAUDE_CONFIG_DIR` on the pod.
+
+---
+
+## provisioning details
+
+`setup.sh` is idempotent and handles real-pod gotchas (locale, npm prefix,
+`/workspace/.cache` permissions, PATH inheritance). After a pod stop/restart it
+re-bootstraps from a stashed `/workspace/bootstrap.sh` with your env baked in:
 
 ```bash
 bash /workspace/bootstrap.sh
 ```
 
-no need to re-type the curl pipe. the cloned repo on `/workspace`
-isn't re-cloned; only the container-side bits get reinstalled.
-
-## configuration
-
-env vars (each takes effect when piped into bash as above):
+If your project repo ships its own `scripts/runpod_setup.sh` /
+`scripts/runpod_activate.sh`, those are used; otherwise the bundled
+`provision/` versions are fetched into the project's `scripts/`.
 
 | var | required | default | what it does |
 |---|---|---|---|
-| `REPO` | yes | — | git url to clone (e.g. `https://github.com/me/proj.git`) |
+| `REPO` | yes | — | git url to clone |
 | `BRANCH` | yes | — | branch to check out |
 | `USER_NAME` | no | `researcher` | non-root user to create + run claude code as |
 | `TMUX_SESSION` | no | `${USER_NAME}` | tmux session name printed in instructions |
-| `KICKOFF_PROMPT` | no | (none) | first prompt to paste into claude code; if set, printed at end |
 | `REPO_DIR_NAME` | no | `basename(REPO)` | clone target dir under `/workspace/<user>/` |
+| `AGENTS_RAW` | no | this repo's raw URL | override to install from a fork/branch |
 
-example with a kickoff prompt:
+---
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/aniket-desh/autoresearch/main/setup.sh \
-  | REPO=https://github.com/me/myproject.git \
-    BRANCH=main \
-    USER_NAME=me \
-    KICKOFF_PROMPT="read docs/kickoff.md and follow its instructions" \
-    bash
-```
+## the agent-team layer
 
-## what's in the repo
+The topology is two layers (see `PLAN.md` §3–4 for the full rationale):
 
 ```
-setup.sh                          one-shot bootstrap (entry point)
-scripts/runpod_setup.sh           generic project setup (uv + .env template)
-scripts/runpod_activate.sh        generic activate (loads .env, prints status)
+you ── talk to ──► main (orchestrator)
+        ┌────────────┼────────────┐
+     Hilbert       Gauss       Poincaré      ← persistent peers, one idea each
+        │            │            │
+   each "use a workflow…" → ephemeral subagents (impl → 2 verifiers → fixer)
 ```
 
-## bundled helpers (auto-installed into the cloned project)
+Key commands once `team` is up:
 
-`setup.sh` looks for these two scripts inside the cloned project repo:
+- `msg <name> "<text>"` — inject a message into another agent's session
+- `claude agents` — the native control plane (sessions grouped by status)
+- `/goal <condition>` — keep a peer working until its acceptance criteria pass
+- `/loop <interval> <prompt>` — overnight cadence on the pod (not `/schedule`,
+  which runs on Anthropic infra and can't see your GPUs)
 
-- `scripts/runpod_setup.sh` — installs uv, runs `uv sync` against your
-  `pyproject.toml`, creates a `.env` template with the standard mech-interp
-  api keys (anthropic, hf, wandb, github), gitignores `.env`. called as
-  the non-root user in step 5.
-- `scripts/runpod_activate.sh` — sources `.env`, activates the uv venv,
-  puts the repo on `PYTHONPATH`, prints a one-line status (which keys
-  are set, gpu list). you source this manually inside tmux before
-  launching claude code.
+**Watch-outs:** token burn is multiplicative across peers × their workflows, so
+run one peer's workflow at a time and size the team to your plan limit, not the
+GPU count. Keep research workflow subagents non-isolated (they read + run evals,
+not edit code in parallel).
 
-**if the project repo doesn't ship them, autoresearch curls its own
-versions from `scripts/runpod_*.sh` in this repo and drops them into
-`<project>/scripts/`** (only if missing — never overwrites a project's
-custom version). this means even a brand-new project with nothing but a
-`pyproject.toml` works out of the box.
-
-if your project has its own setup needs (extra apt packages, custom
-env vars, model prefetching), just add a `scripts/runpod_setup.sh` to
-your repo and `setup.sh` will use it instead of the autoresearch default.
-
-## bugs this script handles
-
-each fix in `setup.sh` corresponds to a real bug hit on a runpod pod:
-
-- **`mkdir /workspace/.cache` eacces** — `/workspace` is sometimes owned
-  by an account that doesn't include the new user. fix: pre-create as
-  root with chmod 777 in step 3, before handing off to the user-side
-  setup.
-- **`LANG=''` in current root shell** — `update-locale` only affects
-  future login shells, not the running one. fix: also export in the
-  script + write to root's .bashrc + print an explicit warning at end.
-- **`npm install -g` eacces `/usr/lib/node_modules`** — npm prefix
-  defaults to `/usr/lib` for non-root. fix: set prefix to
-  `~/.npm-global` FIRST, verify with `npm config get prefix`, install
-  loudly so any remaining errors surface (previous version suppressed
-  output via `/dev/null`, masking failures).
-- **`claude` not found in tmux** — user accidentally runs `tmux` while
-  still being root, lands in tmux as root which has no claude in PATH.
-  fix: print a loud "STEP 1 — switch to non-root user FIRST" banner so
-  the correct sequence (`su - user → tmux → ...`) is unambiguous.
-- **PATH not inherited by non-interactive shells** — write the npm-global
-  + locale exports to BOTH `.bashrc` and `.profile` so `su` and `ssh` as
-  the user inherit the right env whether interactive or not.
+---
 
 ## license
 

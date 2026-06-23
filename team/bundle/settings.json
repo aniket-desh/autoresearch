@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(sudo *)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf /workspace*)",
+      "Bash(rm -rf ~*)",
+      "Bash(git push --force*)",
+      "Bash(git push -f *)",
+      "Bash(curl * | bash)",
+      "Bash(curl * | sh)",
+      "Bash(wget * | bash)",
+      "Bash(wget * | sh)",
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(/workspace/**/.env)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "__CFG__/hooks/guard.sh" } ] }
+    ],
+    "Stop": [
+      { "hooks": [
+        { "type": "command", "command": "__CFG__/hooks/judge.sh" },
+        { "type": "command", "command": "__CFG__/hooks/mailbox-drain.sh" }
+      ] }
+    ],
+    "PostCompact": [
+      { "hooks": [ { "type": "command", "command": "__CFG__/hooks/postcompact.sh" } ] }
+    ],
+    "WorktreeCreate": [
+      { "hooks": [ { "type": "command", "command": "__CFG__/hooks/worktree-link.sh" } ] }
+    ]
+  }
+}
