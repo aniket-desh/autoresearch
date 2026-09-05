@@ -58,10 +58,14 @@ AGENTS_RAW="${AGENTS_RAW:-https://raw.githubusercontent.com/aniket-desh/agents/m
 case "${AGENT_CLI}" in
     codex)
         AGENT_PACKAGE=""
+        AGENT_INSTALL_HINT="curl -fsSL https://chatgpt.com/codex/install.sh | sh"
+        AGENT_AUTH_HINT="codex login --device-auth"
         AGENT_LAUNCH="codex --sandbox workspace-write --approve-for-me"
         ;;
     claude)
         AGENT_PACKAGE="@anthropic-ai/claude-code"
+        AGENT_INSTALL_HINT="npm config set prefix \"\$HOME/.npm-global\" && npm install -g @anthropic-ai/claude-code"
+        AGENT_AUTH_HINT="claude  # complete subscription login, then exit"
         AGENT_LAUNCH="claude --dangerously-skip-permissions"
         ;;
     *)
@@ -121,7 +125,9 @@ if you've already done the root-side bits, finish manually as the user:
     bash ${PROVISION_DIR}/runpod_setup.sh
     nano .env
     source ${PROVISION_DIR}/runpod_activate.sh
-    tmux new -s ${TMUX_SESSION}
+    ${AGENT_INSTALL_HINT}
+    ${AGENT_AUTH_HINT}
+    tmux new-session -A -s ${TMUX_SESSION}
     ${AGENT_LAUNCH}
 EOM
     exit 1
@@ -135,7 +141,7 @@ apt-get update >/dev/null
 # uses for status icons. both required for symbols not to appear as ?.
 # jq is required by the agent-team hooks (guard/judge/postcompact parse the
 # hook JSON on stdin with it).
-apt-get install -y curl ca-certificates gnupg tmux vim nano less git gh jq \
+apt-get install -y curl ca-certificates gnupg tmux vim nano less git gh jq ripgrep \
     locales fonts-noto-color-emoji >/dev/null
 
 # generate en_US.UTF-8 + set as system default. note: only takes effect
@@ -402,6 +408,7 @@ cat <<INSTRUCTIONS
       export RUNPOD_PROJECT_DIR=${PROJECT_DIR}
       source ${ACTIVATE_SCRIPT}
       [ -n "\${GH_TOKEN:-}" ] && gh auth setup-git
+      ${AGENT_AUTH_HINT}
       tmux new-session -A -s ${TMUX_SESSION}
 
   STEP 4 — inside tmux, launch ${AGENT_CLI} from the Git repository root:
@@ -413,10 +420,6 @@ INSTRUCTIONS
 
 if [ "${AGENT_CLI}" = "codex" ]; then
     cat <<INSTRUCTIONS
-  On the first run, authenticate before opening tmux:
-
-      codex login --device-auth
-
   CODEX_HOME points to ${WORKSPACE}/.codex, so the login and Codex subagent
   configuration survive pod restarts.
 
