@@ -6,9 +6,11 @@
 # loads .env, activates the uv-managed venv, sets sane defaults for
 # online-friendly tooling, prints a one-line status. idempotent.
 
-# repo root via git; falls back to current dir.
+# RUNPOD_PROJECT_DIR may select a nested Python project. Keep the Git root
+# separately so agents can still reason about the full checkout.
+PROJECT_ROOT="${RUNPOD_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+cd "$PROJECT_ROOT" || return 1 2>/dev/null || exit 1
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-cd "$REPO_ROOT"
 
 # load api keys + cache config from .env if present.
 if [ -f .env ]; then
@@ -46,9 +48,9 @@ export PATH="$HOME/.local/bin:$PATH"
 # claude code's npm-global location (oneshot installs it here for the user).
 [ -d "$HOME/.npm-global/bin" ] && export PATH="$HOME/.npm-global/bin:$PATH"
 
-# put repo root on python's import path so `from <pkg> import …` works
+# put the Python project on the import path so `from <pkg> import …` works
 # regardless of cwd.
-export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 # tqdm progress bars work better unbuffered.
 export PYTHONUNBUFFERED=1
@@ -64,7 +66,8 @@ export TERM="${TERM:-xterm-256color}"
 
 # one-line status print so the user knows the env is loaded + which keys
 # are set (without echoing the keys themselves).
-echo "(runpod) repo: $REPO_ROOT"
+echo "(runpod) repo:    $REPO_ROOT"
+echo "  project:        $PROJECT_ROOT"
 [ -n "${ANTHROPIC_API_KEY:-}" ] && echo "  ANTHROPIC_API_KEY: set (autointerp/judge only — stripped from interactive claude)" || echo "  ANTHROPIC_API_KEY: missing"
 [ -n "${HF_TOKEN:-}" ]          && echo "  HF_TOKEN:          set"   || echo "  HF_TOKEN:          missing"
 [ -n "${GH_TOKEN:-}" ]          && echo "  GH_TOKEN:          set"   || echo "  GH_TOKEN:          missing"

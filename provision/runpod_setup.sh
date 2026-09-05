@@ -1,6 +1,7 @@
 #!/bin/bash
 # runpod_setup.sh — one-time per-project bootstrap for any uv-managed
-# python project on a runpod pod.
+# Python project on a RunPod pod. RUNPOD_PROJECT_DIR may point at a nested
+# project such as <repo>/purified; otherwise the Git root is used.
 #
 # called by autoresearch/setup.sh after the user is created and the
 # repo is cloned. can also be run manually inside a project repo:
@@ -16,7 +17,8 @@
 
 set -euo pipefail
 
-cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+PROJECT_ROOT="${RUNPOD_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+cd "$PROJECT_ROOT"
 
 echo ">> installing uv..."
 if ! command -v uv >/dev/null 2>&1; then
@@ -27,7 +29,11 @@ uv --version
 
 echo ">> uv sync (resolves pyproject.toml + lockfile)..."
 if [ -f pyproject.toml ]; then
-    uv sync
+    if [ -f uv.lock ]; then
+        uv sync --frozen
+    else
+        uv sync
+    fi
 else
     echo "   (no pyproject.toml in repo root; skipping uv sync — set up deps yourself)"
 fi
@@ -83,12 +89,15 @@ else
     ensure_var HF_HOME "/workspace/.cache/huggingface" "hf cache dir"
     ensure_var TRANSFORMERS_CACHE "\$HF_HOME" "transformers cache alias"
 fi
+chmod 600 .env
 
-# make sure .env is gitignored.
-if [ -f .gitignore ]; then
-    grep -qE '^\.env$' .gitignore || echo ".env" >> .gitignore
-else
-    echo ".env" > .gitignore
+# Keep credentials ignored without changing tracked repository files. A local
+# info/exclude entry is enough when the project does not already ignore .env.
+if git rev-parse --git-dir >/dev/null 2>&1 && ! git check-ignore -q -- .env; then
+    GIT_DIR="$(git rev-parse --git-dir)"
+    mkdir -p "${GIT_DIR}/info"
+    touch "${GIT_DIR}/info/exclude"
+    grep -qE '^\.env$' "${GIT_DIR}/info/exclude" || echo ".env" >> "${GIT_DIR}/info/exclude"
 fi
 
 mkdir -p /workspace/.cache/huggingface logs

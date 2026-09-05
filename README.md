@@ -3,13 +3,11 @@
 A two-part setup repo for running AI research on rented GPUs:
 
 1. **`provision/`** — one curl-pipe-bash that takes a fresh RunPod from absolute
-   zero (root ssh, blank `/workspace`) to "tmux + Claude Code running as a
-   non-root user inside a uv venv." (This was the whole `autoresearch` repo;
-   it's now one subsystem.)
+   zero (root ssh, blank `/workspace`) to "tmux + Codex running as a non-root
+   user inside a uv venv." (This was the whole `autoresearch` repo; it's now one
+   subsystem.)
 2. **`team/` + the Claude Code bundle** — a **team-of-agents-run-by-an-agent**
-   workflow: a `main` orchestrator you talk to, persistent named peers (Hilbert,
-   Gauss, Poincaré…) that each own one experiment idea, and per-peer **dynamic
-   workflows** that fan out ephemeral subagents with adversarial verification.
+   workflow retained as an optional legacy layer.
 
 See [`PLAN.md`](PLAN.md) for the full design rationale and the do's/don'ts.
 
@@ -24,24 +22,49 @@ curl -fsSL https://raw.githubusercontent.com/aniket-desh/agents/main/setup.sh \
   | REPO=https://github.com/<owner>/<project>.git \
     BRANCH=<branch> \
     USER_NAME=<user> \
+    PROJECT_SUBDIR=<optional/python-project-subdir> \
+    AGENT_CLI=codex \
+    INSTALL_TEAM=0 \
     bash
 ```
 
-This provisions the pod **and** installs the agent-team layer. Then:
+Then:
 
 ```bash
 su - <user>
-claude                       # ONE-TIME /login on your subscription — do NOT paste an API key
-cd /workspace/<user>/<project>
-team                         # launch main + peers, auto-sized to the pod's GPUs
+cd /workspace/<user>/<project>/<optional-subdir>
+export RUNPOD_PROJECT_DIR="$PWD"
+source /workspace/<user>/.agents/provision/runpod_activate.sh
+codex login --device-auth
+tmux new-session -A -s <user>
+# inside tmux, from the Git repository root:
+codex --sandbox workspace-write --approve-for-me
 ```
 
-Talk to the **main** session; it delegates one experiment idea to each peer.
-Watch the whole fleet with `claude agents`.
+Codex's credentials and a global RunPod research-lead `AGENTS.md` live under
+`/workspace/<user>/.codex`, so authentication and subagent guidance survive pod
+restarts. Codex's built-in subagents are capped at four concurrent workers.
+
+For the current Temporal Crosscoders branch, the exact root-side bootstrap is:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aniket-desh/agents/main/setup.sh \
+  | REPO=https://github.com/chainik1125/temp_xc.git \
+    BRANCH=neurips-aniket \
+    USER_NAME=aniket \
+    TMUX_SESSION=lead \
+    PROJECT_SUBDIR=purified \
+    AGENT_CLI=codex \
+    INSTALL_TEAM=0 \
+    bash
+```
+
+To use the retained Claude team implementation instead, set
+`AGENT_CLI=claude INSTALL_TEAM=1`, then follow the printed `team` instructions.
 
 ---
 
-## billing model (important)
+## legacy Claude team billing
 
 You run interactive agents on your **Claude subscription**, and reserve the
 `ANTHROPIC_API_KEY` for **headless autointerp / LLM-judge calls only**.
@@ -58,12 +81,15 @@ You run interactive agents on your **Claude subscription**, and reserve the
 ## repo structure
 
 ```
-setup.sh                          one-shot pod bootstrap (entry point; installs both subsystems)
+setup.sh                          one-shot pod bootstrap (Codex by default; team optional)
 PLAN.md                           full design + rationale
+
+codex/
+  AGENTS.md                       persistent lead/subagent/GPU coordination guidance
 
 provision/                        SUBSYSTEM 1 — the RunPod bootstrap
   runpod_setup.sh                 uv sync + .env template
-  runpod_activate.sh              sources .env, activates venv, billing-safe claude alias
+  runpod_activate.sh              sources .env, activates venv, configures caches
 
 team/                             SUBSYSTEM 2 — the agent-team layer
   team.sh                         launcher: name-sample + GPU-partition + native --worktree/--tmux
@@ -86,7 +112,7 @@ team/                             SUBSYSTEM 2 — the agent-team layer
 
 ## provisioning details
 
-`setup.sh` is idempotent and handles real-pod gotchas (locale, npm prefix,
+`setup.sh` is idempotent and handles real-pod gotchas (locale, agent install,
 `/workspace/.cache` permissions, PATH inheritance). After a pod stop/restart it
 re-bootstraps from a stashed `/workspace/bootstrap.sh` with your env baked in:
 
@@ -96,15 +122,19 @@ bash /workspace/bootstrap.sh
 
 If your project repo ships its own `scripts/runpod_setup.sh` /
 `scripts/runpod_activate.sh`, those are used; otherwise the bundled
-`provision/` versions are fetched into the project's `scripts/`.
+`provision/` versions are fetched under `/workspace/<user>/.agents/`, outside
+the checkout. This keeps a freshly cloned research tree clean.
 
 | var | required | default | what it does |
 |---|---|---|---|
 | `REPO` | yes | — | git url to clone |
 | `BRANCH` | yes | — | branch to check out |
-| `USER_NAME` | no | `researcher` | non-root user to create + run claude code as |
+| `USER_NAME` | no | `researcher` | non-root user to create + run the agent CLI as |
 | `TMUX_SESSION` | no | `${USER_NAME}` | tmux session name printed in instructions |
 | `REPO_DIR_NAME` | no | `basename(REPO)` | clone target dir under `/workspace/<user>/` |
+| `PROJECT_SUBDIR` | no | empty | nested directory containing `pyproject.toml`, such as `purified` |
+| `AGENT_CLI` | no | `codex` | install `codex` or `claude` |
+| `INSTALL_TEAM` | no | `0` | install the legacy Claude team layer; requires `AGENT_CLI=claude` |
 | `AGENTS_RAW` | no | this repo's raw URL | override to install from a fork/branch |
 
 ---

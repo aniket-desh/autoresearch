@@ -2,7 +2,7 @@
 # setup.sh — generic runpod bootstrap for mech-interp / ai research projects.
 #
 # Bootstraps a fresh runpod from absolute zero (root ssh, blank
-# /workspace volume) to "tmux + claude code running as a non-root user
+# /workspace volume) to "tmux + an agent CLI running as a non-root user
 # inside a uv venv", in one curl-pipe-bash invocation.
 #
 # usage (as root, from a fresh pod):
@@ -16,17 +16,18 @@
 # configurable env vars (each has a sensible default unless marked required):
 #   REPO            REQUIRED        repo to clone (e.g. https://github.com/me/proj.git)
 #   BRANCH          REQUIRED        branch to check out
-#   USER_NAME       'researcher'    non-root user to create + run claude code as
+#   USER_NAME       'researcher'    non-root user to create + run the agent CLI as
 #   TMUX_SESSION    "${USER_NAME}"  tmux session name printed in instructions
-#   KICKOFF_PROMPT  ''              first prompt to paste into claude code
+#   KICKOFF_PROMPT  ''              first prompt to paste into the agent CLI
 #                                    (printed at end if set)
 #   REPO_DIR_NAME   <repo basename> directory to clone into under /workspace/<user>
+#   PROJECT_SUBDIR  ''              python project path inside the cloned repo
+#   AGENT_CLI       'codex'         codex or claude
+#   INSTALL_TEAM    '0'             install the legacy Claude team layer (0 or 1)
 #
-# the script assumes the cloned repo follows the convention:
-#   scripts/runpod_setup.sh        installs uv, syncs deps, creates .env template
-#   scripts/runpod_activate.sh     sources .env + verifies keys + nvidia-smi
-# if those don't exist, the script still completes the user + node + claude
-# code install, and prints what's missing.
+# If the project ships scripts/runpod_{setup,activate}.sh, they are used.
+# Otherwise the generic helpers from this repo run from outside the checkout,
+# so bootstrapping never dirties the research tree.
 #
 # idempotent: re-running on a half-set-up pod is safe.
 #
@@ -34,7 +35,7 @@
 #   - mkdir /workspace/.cache eacces — pre-create as root with chmod 777
 #   - LANG='' in current root shell after script — also export here
 #   - npm install -g eacces /usr/lib/node_modules — set npm prefix first
-#   - claude not found in tmux — print loud "switch to user FIRST" warning
+#   - agent CLI not found in tmux — print loud "switch to user FIRST" warning
 #   - PATH not inherited by non-interactive shells — write to both .bashrc + .profile
 
 set -euo pipefail
@@ -44,12 +45,50 @@ BRANCH="${BRANCH:-}"
 REPO="${REPO:-}"
 TMUX_SESSION="${TMUX_SESSION:-${USER_NAME}}"
 KICKOFF_PROMPT="${KICKOFF_PROMPT:-}"
+PROJECT_SUBDIR="${PROJECT_SUBDIR:-}"
+AGENT_CLI="${AGENT_CLI:-codex}"
+INSTALL_TEAM="${INSTALL_TEAM:-0}"
 WORKSPACE="/workspace/${USER_NAME}"
 
 # base raw URL for THIS repo (the agents setup repo). every fetch below derives
 # from it, so renaming the GitHub repo is a one-line change here (or override
 # AGENTS_RAW in the environment to point at a fork/branch).
 AGENTS_RAW="${AGENTS_RAW:-https://raw.githubusercontent.com/aniket-desh/agents/main}"
+
+case "${AGENT_CLI}" in
+    codex)
+        AGENT_PACKAGE=""
+        AGENT_LAUNCH="codex --sandbox workspace-write --approve-for-me"
+        ;;
+    claude)
+        AGENT_PACKAGE="@anthropic-ai/claude-code"
+        AGENT_LAUNCH="claude --dangerously-skip-permissions"
+        ;;
+    *)
+        echo "ERROR: AGENT_CLI must be 'codex' or 'claude' (got '${AGENT_CLI}')." >&2
+        exit 1
+        ;;
+esac
+
+case "${PROJECT_SUBDIR}" in
+    /*|../*|*/../*|*/..)
+        echo "ERROR: PROJECT_SUBDIR must be a relative path within the repository." >&2
+        exit 1
+        ;;
+esac
+
+case "${INSTALL_TEAM}" in
+    0|1) ;;
+    *)
+        echo "ERROR: INSTALL_TEAM must be 0 or 1 (got '${INSTALL_TEAM}')." >&2
+        exit 1
+        ;;
+esac
+
+if [ "${INSTALL_TEAM}" = "1" ] && [ "${AGENT_CLI}" != "claude" ]; then
+    echo "ERROR: the legacy team layer requires AGENT_CLI=claude." >&2
+    exit 1
+fi
 
 if [ -z "${REPO}" ] || [ -z "${BRANCH}" ]; then
     cat <<EOM >&2
@@ -67,6 +106,8 @@ fi
 # infer repo dir from URL basename (strip .git).
 REPO_DIR_NAME="${REPO_DIR_NAME:-$(basename "${REPO}" .git)}"
 REPO_DIR="${WORKSPACE}/${REPO_DIR_NAME}"
+PROJECT_DIR="${REPO_DIR}${PROJECT_SUBDIR:+/${PROJECT_SUBDIR}}"
+PROVISION_DIR="${WORKSPACE}/.agents/provision"
 
 if [ "$(id -u)" -ne 0 ]; then
     cat <<EOM >&2
@@ -75,15 +116,13 @@ ERROR: this script must run as root (runpod's ssh lands as root by default).
 if you've already done the root-side bits, finish manually as the user:
 
     su - ${USER_NAME}
-    cd ${REPO_DIR}
-    bash scripts/runpod_setup.sh
+    cd ${PROJECT_DIR}
+    export RUNPOD_PROJECT_DIR=${PROJECT_DIR}
+    bash ${PROVISION_DIR}/runpod_setup.sh
     nano .env
-    source scripts/runpod_activate.sh
-    npm config set prefix "\$HOME/.npm-global"
-    npm install -g @anthropic-ai/claude-code
-    export PATH="\$HOME/.npm-global/bin:\$PATH"
+    source ${PROVISION_DIR}/runpod_activate.sh
     tmux new -s ${TMUX_SESSION}
-    claude --dangerously-skip-permissions
+    ${AGENT_LAUNCH}
 EOM
     exit 1
 fi
@@ -91,12 +130,12 @@ fi
 echo "=== [1/7] system packages (as root) ==="
 export DEBIAN_FRONTEND=noninteractive
 apt-get update >/dev/null
-# locales gives us en_US.UTF-8 so claude code's box-drawing + emoji
-# render. fonts-noto-color-emoji covers the emoji glyphs claude code
+# locales gives us en_US.UTF-8 so the agent CLI's box-drawing + emoji
+# render. fonts-noto-color-emoji covers the emoji glyphs the CLI
 # uses for status icons. both required for symbols not to appear as ?.
 # jq is required by the agent-team hooks (guard/judge/postcompact parse the
 # hook JSON on stdin with it).
-apt-get install -y curl ca-certificates gnupg tmux vim nano less git jq \
+apt-get install -y curl ca-certificates gnupg tmux vim nano less git gh jq \
     locales fonts-noto-color-emoji >/dev/null
 
 # generate en_US.UTF-8 + set as system default. note: only takes effect
@@ -114,12 +153,14 @@ add_root_bashrc 'export LANG=en_US.UTF-8'
 add_root_bashrc 'export LC_ALL=en_US.UTF-8'
 add_root_bashrc 'export TERM=xterm-256color'
 
-if ! command -v node >/dev/null 2>&1; then
+if [ "${AGENT_CLI}" = "claude" ] && ! command -v node >/dev/null 2>&1; then
     echo "  installing node.js 22 from nodesource..."
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null 2>&1
     apt-get install -y nodejs >/dev/null
 fi
-echo "  node $(node --version), npm $(npm --version)"
+if [ "${AGENT_CLI}" = "claude" ]; then
+    echo "  node $(node --version), npm $(npm --version)"
+fi
 
 echo
 echo "=== [2/7] create non-root user '${USER_NAME}' ==="
@@ -155,8 +196,8 @@ echo "  /workspace/.cache → $(ls -ld /workspace/.cache | awk '{print $1, $3}')
 
 echo
 echo "=== [4/7] clone + checkout ${BRANCH} as ${USER_NAME} ==="
-# this repo's bundled fallback helper scripts (in provision/). used by step
-# [5/7] if the cloned project repo doesn't ship its own scripts/runpod_*.sh.
+# This repo's generic helper scripts are installed outside the cloned checkout.
+# A project-specific helper under PROJECT_DIR/scripts still takes precedence.
 PROVISION_RAW="${AGENTS_RAW}/provision"
 
 su - "${USER_NAME}" <<EOF
@@ -168,32 +209,44 @@ fi
 cd "${REPO_DIR}"
 git fetch origin
 git checkout "${BRANCH}"
-git pull --ff-only origin "${BRANCH}" || true
+git pull --ff-only origin "${BRANCH}"
 
-# fall back to this repo's bundled helpers if the project doesn't ship its
-# own. only install if missing — never overwrite.
-mkdir -p scripts
+# Keep generic bootstrap files outside the repo so a fresh checkout stays clean.
+mkdir -p "${PROVISION_DIR}"
 for f in runpod_setup.sh runpod_activate.sh; do
-    if [ ! -f "scripts/\$f" ]; then
-        echo "  fetching bundled \$f (project repo doesn't ship one)"
-        curl -fsSL "${PROVISION_RAW}/\$f" -o "scripts/\$f"
-    fi
+    curl -fsSL "${PROVISION_RAW}/\$f" -o "${PROVISION_DIR}/\$f"
 done
-chmod +x scripts/runpod_setup.sh scripts/runpod_activate.sh 2>/dev/null || true
+chmod +x "${PROVISION_DIR}/runpod_setup.sh" "${PROVISION_DIR}/runpod_activate.sh"
 EOF
 
 echo
-echo "=== [5/7] run scripts/runpod_setup.sh as ${USER_NAME} (uv sync + .env template) ==="
+echo "=== [5/7] project setup as ${USER_NAME} (uv sync + .env template) ==="
 su - "${USER_NAME}" <<EOF
 set -euo pipefail
-cd "${REPO_DIR}"
-bash scripts/runpod_setup.sh
+cd "${PROJECT_DIR}"
+export RUNPOD_PROJECT_DIR="${PROJECT_DIR}"
+if [ -f "${PROJECT_DIR}/scripts/runpod_setup.sh" ]; then
+    bash "${PROJECT_DIR}/scripts/runpod_setup.sh"
+else
+    bash "${PROVISION_DIR}/runpod_setup.sh"
+fi
 EOF
 
+if [ -f "${PROJECT_DIR}/scripts/runpod_activate.sh" ]; then
+    ACTIVATE_SCRIPT="${PROJECT_DIR}/scripts/runpod_activate.sh"
+else
+    ACTIVATE_SCRIPT="${PROVISION_DIR}/runpod_activate.sh"
+fi
+
 echo
-echo "=== [6/7] per-user shell env + claude code install (as ${USER_NAME}) ==="
-su - "${USER_NAME}" <<'EOF'
+echo "=== [6/7] per-user shell env + ${AGENT_CLI} install (as ${USER_NAME}) ==="
+su - "${USER_NAME}" -c "bash -s -- '${AGENT_CLI}' '${WORKSPACE}' '${AGENT_PACKAGE}' '${AGENTS_RAW}'" <<'EOF'
 set -euo pipefail
+
+AGENT_CLI="$1"
+WORKSPACE="$2"
+AGENT_PACKAGE="$3"
+AGENTS_RAW="$4"
 
 # persist env across all future shells (interactive + login + tmux).
 # we write to BOTH .bashrc and .profile so non-interactive su/ssh
@@ -204,12 +257,17 @@ add_to_rcs() {
         grep -qF "$1" "$rc" 2>/dev/null || echo "$1" >> "$rc"
     done
 }
-add_to_rcs 'export PATH=$HOME/.npm-global/bin:$PATH'
+add_to_rcs 'export PATH=$HOME/.local/bin:$HOME/.npm-global/bin:$PATH'
 add_to_rcs 'export LANG=en_US.UTF-8'
 add_to_rcs 'export LC_ALL=en_US.UTF-8'
-# tmux strips claude code's box-drawing chars unless TERM is xterm-256color
+# tmux strips box-drawing chars unless TERM is xterm-256color
 # (or tmux-256color, set via .tmux.conf below).
 add_to_rcs 'export TERM=xterm-256color'
+if [ "$AGENT_CLI" = "codex" ]; then
+    mkdir -p "${WORKSPACE}/.codex"
+    add_to_rcs "export CODEX_HOME=${WORKSPACE}/.codex"
+    export CODEX_HOME="${WORKSPACE}/.codex"
+fi
 
 # tmux config: force utf-8, 256-color + truecolor passthrough, scrollback.
 cat > "$HOME/.tmux.conf" <<'TMUX'
@@ -219,36 +277,47 @@ set -g history-limit 50000
 set -g mouse on
 TMUX
 
-# set npm prefix BEFORE installing so the global install lands in the
-# user's home rather than /usr/lib/node_modules (which requires root).
-mkdir -p "$HOME/.npm-global"
-npm config set prefix "$HOME/.npm-global"
-NPM_PREFIX_NOW=$(npm config get prefix)
-echo "  npm prefix = ${NPM_PREFIX_NOW}"
-if [ "${NPM_PREFIX_NOW}" != "${HOME}/.npm-global" ]; then
-    echo "  WARNING: npm prefix is not ${HOME}/.npm-global; install may eacces."
-fi
-
 # export the env in THIS subshell so the install + which checks below
 # see the right PATH (the .bashrc edits only affect FUTURE shells).
-export PATH="$HOME/.npm-global/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"
 export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 TERM=xterm-256color
 
-# install loudly (no /dev/null redirect, so eacces or network errors
-# are visible; previous quiet install was masking failures).
-if ! command -v claude >/dev/null 2>&1; then
-    npm install -g @anthropic-ai/claude-code
-fi
-if command -v claude >/dev/null 2>&1; then
-    echo "  ✓ claude $(claude --version) at $(which claude)"
+if [ "$AGENT_CLI" = "codex" ]; then
+    if ! command -v codex >/dev/null 2>&1; then
+        curl -fsSL https://chatgpt.com/codex/install.sh | sh
+    fi
+
+    # Codex reads global AGENTS.md from CODEX_HOME on every new session.
+    # Preserve local edits on re-bootstrap; only seed a fresh configuration.
+    if [ ! -f "$CODEX_HOME/AGENTS.md" ]; then
+        curl -fsSL "${AGENTS_RAW}/codex/AGENTS.md" -o "$CODEX_HOME/AGENTS.md"
+    fi
+    if [ ! -f "$CODEX_HOME/config.toml" ]; then
+        cat > "$CODEX_HOME/config.toml" <<'CONFIG'
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 4
+CONFIG
+    fi
 else
-    echo "  ✗ claude install failed; see npm output above"
+    # Claude Code still uses npm; keep the install in the user's home.
+    mkdir -p "$HOME/.npm-global"
+    npm config set prefix "$HOME/.npm-global"
+    if ! command -v claude >/dev/null 2>&1; then
+        npm install -g "$AGENT_PACKAGE"
+    fi
+fi
+if command -v "$AGENT_CLI" >/dev/null 2>&1; then
+    echo "  ✓ $("$AGENT_CLI" --version) at $(command -v "$AGENT_CLI")"
+else
+    echo "  ✗ ${AGENT_CLI} install failed; see npm output above"
     exit 1
 fi
 EOF
 
+if [ "${INSTALL_TEAM}" = "1" ]; then
 echo
-echo "=== [6.5/7] install agent-team layer (as ${USER_NAME}) ==="
+echo "=== [6.5/7] install legacy agent-team layer (as ${USER_NAME}) ==="
 # the multi-agent workflow layer: launchers (team/msg), the claude code bundle
 # (roles + hooks + skill + settings) into a persistent CLAUDE_CONFIG_DIR on
 # /workspace, and the name pool. rides the same curl flow; idempotent.
@@ -261,11 +330,14 @@ export CLAUDE_CONFIG_DIR="${WORKSPACE}/.claude"
 curl -fsSL "${AGENTS_RAW}/team/install.sh" -o /tmp/agents_install.sh
 bash /tmp/agents_install.sh
 EOF
+else
+    echo "=== [6.5/7] skip legacy agent-team layer (INSTALL_TEAM=0) ==="
+fi
 
 echo
 echo "=== [7/7] stash re-bootstrap command at /workspace/bootstrap.sh ==="
 # runpod stop/restart wipes the container fs (so /etc/passwd loses our user,
-# apt packages disappear, node + claude code are gone) but keeps /workspace.
+# apt packages disappear, node + the agent CLI are gone) but keeps /workspace.
 # write a tiny bootstrap that re-runs this setup with the same env vars so
 # you don't have to re-type the curl pipe after every restart — just:
 #     bash /workspace/bootstrap.sh
@@ -280,8 +352,8 @@ cat > /workspace/bootstrap.sh <<EOF
 #     bash /workspace/bootstrap.sh
 #
 # idempotent — the cloned repo at ${REPO_DIR} is already on /workspace and
-# is not re-cloned; only the user account, apt packages, node, and claude
-# code (which all live on the container fs) get reinstalled.
+# is not re-cloned; only the user account, apt packages, node, and the agent
+# CLI (which all live on the container fs) get reinstalled.
 
 set -euo pipefail
 
@@ -292,10 +364,15 @@ curl -fsSL ${AGENTS_RAW}/setup.sh \\
     USER_NAME='${USER_NAME}' \\
     TMUX_SESSION='${TMUX_SESSION}' \\
     REPO_DIR_NAME='${REPO_DIR_NAME}' \\
+    PROJECT_SUBDIR='${PROJECT_SUBDIR}' \\
+    AGENT_CLI='${AGENT_CLI}' \\
+    INSTALL_TEAM='${INSTALL_TEAM}' \\
     bash
 EOF
 chmod 0755 /workspace/bootstrap.sh
 echo "  /workspace/bootstrap.sh written (after restart: bash /workspace/bootstrap.sh)"
+echo "  checkout status:"
+su - "${USER_NAME}" -c "git -C '${REPO_DIR}' status --short --branch"
 
 # ─── summary ──────────────────────────────────────────────────────────────────
 cat <<INSTRUCTIONS
@@ -309,40 +386,55 @@ cat <<INSTRUCTIONS
   (you can ignore this if you're about to switch to ${USER_NAME} anyway.)
 
   STEP 1 — switch to non-root user (do NOT skip; tmux launched as root
-            won't find claude code, and runpod_activate.sh writes to
+            won't find ${AGENT_CLI}, and runpod_activate.sh writes to
             ~/.cache as the running user):
 
       su - ${USER_NAME}
 
-  STEP 2 — fill in api keys in .env (the ANTHROPIC_API_KEY here is for
-            autointerp/judge calls ONLY; interactive agents use your
-            subscription login from STEP 3):
+  STEP 2 — fill in any project API keys in the ignored .env:
 
-      cd ${REPO_DIR}
+      cd ${PROJECT_DIR}
       nano .env
 
-  STEP 3 — one-time subscription login (do NOT paste an API key):
+  STEP 3 — activate the project, then open tmux as ${USER_NAME}:
+
+      cd ${PROJECT_DIR}
+      export RUNPOD_PROJECT_DIR=${PROJECT_DIR}
+      source ${ACTIVATE_SCRIPT}
+      [ -n "\${GH_TOKEN:-}" ] && gh auth setup-git
+      tmux new-session -A -s ${TMUX_SESSION}
+
+  STEP 4 — inside tmux, launch ${AGENT_CLI} from the Git repository root:
 
       cd ${REPO_DIR}
-      source scripts/runpod_activate.sh   # loads .env, strips key from interactive claude
-      claude                              # complete /login once, then Ctrl-C
-                                          # (creds saved under CLAUDE_CONFIG_DIR on /workspace,
-                                          #  so they survive pod restarts)
-
-  STEP 4 — launch the agent team:
-
-      team                                # main + peers, auto-sized to the pod's GPUs
-      # watch the fleet:  claude agents
-      # talk to the team in the 'main' session:  tmux attach -t main
-      #
-      # prefer auto mode (shift+tab) over --dangerously-skip-permissions; the
-      # permissions.deny backstop + guard hook stay enforced either way.
+      ${AGENT_LAUNCH}
 
 INSTRUCTIONS
 
+if [ "${AGENT_CLI}" = "codex" ]; then
+    cat <<INSTRUCTIONS
+  On the first run, authenticate before opening tmux:
+
+      codex login --device-auth
+
+  CODEX_HOME points to ${WORKSPACE}/.codex, so the login and Codex subagent
+  configuration survive pod restarts.
+
+INSTRUCTIONS
+fi
+
+if [ "${INSTALL_TEAM}" = "1" ]; then
+    cat <<INSTRUCTIONS
+  The legacy Claude team layer is installed. Launch it with:
+
+      team
+
+INSTRUCTIONS
+fi
+
 if [ -n "${KICKOFF_PROMPT}" ]; then
     cat <<INSTRUCTIONS
-  STEP 5 — paste this first prompt to the 'main' agent:
+  Paste this first prompt to ${AGENT_CLI}:
 
       ${KICKOFF_PROMPT}
 
@@ -353,7 +445,7 @@ cat <<INSTRUCTIONS
   detach tmux: ctrl-b d.  reattach: tmux attach -t ${TMUX_SESSION}.
 
   AFTER POD RESTART: runpod wipes the container fs (user account, apt,
-  node, claude code) but /workspace persists. to re-bootstrap, just ssh
+  node, ${AGENT_CLI}) but /workspace persists. to re-bootstrap, just ssh
   in as root and run:
 
       bash /workspace/bootstrap.sh
